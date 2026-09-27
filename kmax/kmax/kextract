@@ -1,0 +1,50 @@
+#!/usr/bin/env python
+
+# This is a wrapper for the kextract C extensions that allows you to
+# choose which kextract extension version to use.
+
+import sys
+import argparse
+import kmax.about
+import kmax.kextractcommon
+
+if __name__ == '__main__':
+
+  usage = """\
+kextract [--module-version version] arg1 arg2 ...
+
+\t--module-version version\tSpecify the version of the Kconfig parser to use.  Defaults to \"latest\" (%s).  %s.
+
+Kmax Tools %s
+""" % (kmax.kextractcommon.latest_module, kmax.kextractcommon.available_versions, kmax.about.__version__)
+
+  args = sys.argv
+
+  # remove program name
+  args = args[1:]
+  
+  if len(args) == 0:
+    sys.stderr.write(usage)
+    exit(0)
+
+  module_version = "latest"
+  if args[0] == "--module-version":
+    args = args[1:]
+    if len(args) == 0:
+      sys.stderr.write(usage)
+      exit(0)
+    module_version = args[0]
+    args = args[1:]
+
+  if len(args) == 0:
+    sys.stderr.write(usage)
+    exit(0)
+    
+  if module_version == "latest":
+    module_version = kmax.kextractcommon.latest_module
+
+  if module_version not in kmax.kextractcommon.module_versions.keys():
+    sys.stderr.write("Invalid module version \"%s\".  %s.\n" % (module_version, available_versions))
+    exit(1)
+
+  kmax.kextractcommon.kextract(module_version, args)

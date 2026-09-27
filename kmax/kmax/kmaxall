@@ -1,0 +1,295 @@
+#!/usr/bin/env python
+
+# todo: make z3 the default, have separate flag for file analysis that just does it all
+
+# Kmax
+# Copyright (C) 2012-2019 Paul Gazzillo
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Recursively collect the presence conditions for all compilation
+# units and subdirectories from Kbuild Makefiles by repeatedly calling
+# kmax
+
+if __name__ == '__main__':    
+
+  import sys
+  import os
+  import glob
+  import re
+  import fnmatch
+  import argparse
+  import subprocess
+  try:
+      import cPickle as pickle
+  except ImportError:  #Python3
+      import pickle
+  import time
+  import z3
+  import kmax.about
+
+  import kmax.vcommon as CM
+
+  starting_time = time.time()
+
+  argparser = argparse.ArgumentParser(
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+      description="""\
+  Find a set of configurations that covers all configuration variables in the
+  given Kbuild Makefile.
+      """,
+      epilog="""\
+      """
+      )
+  argparser.add_argument('makefile',
+                         nargs="*",
+                         type=str,
+                         help="""the name of a Linux Makefile or subdir""")
+  argparser.add_argument('-D',
+                         '--define',
+                         action='append',
+                         help="""\
+  define a make variable""")
+  argparser.add_argument('--unselectable',
+                         type=str,
+                         help="""the name of a file containing a list of unselectable configuration options.  these options will be treated as always disabled.""")
+  argparser.add_argument('-x',
+                         '--excludes-file',
+                         help="""\
+  provides the excludes filename for reading and writing subdirectories that run \
+  without error""")
+  argparser.add_argument('-C',
+                         '--config-vars',
+                         type=str,
+                         help="""the name of a KConfigData file containing \
+  configuration variable data""")
+  argparser.add_argument('-B',
+                         '--boolean-configs',
+                         action="store_true",
+                         default=True,
+                         help="""\
+  Treat all configuration variables as Boolean variables""")
+  argparser.add_argument('-T',
+                         '--tristate-configs',
+                         action="store_true",
+                         help="""\
+  Treat all Boolean configuration variables as tristate variables""")
+  argparser.add_argument('-z',
+                         '--z3',
+                         action="store_true",
+                         default=True,
+                         help="""\
+  Collect per-file constraints as a pickled dictionary from names to smtlib2 expressions.  On by default.""")
+  argparser.add_argument('-a',
+                         '--output-all-unit-types',
+                         action="store_true",
+                         help="""Output all kinds of units found, including compilation units, library units, hostprogs, unconfigurable units, extra targets, clean files, C file targets, and composites.  This is used to help with completeness checking.""")
+  argparser.add_argument('-F',
+                         '--existing-results-file',
+                         help="""Take the output from a prior run of kmaxall.  kmaxall will add new data to these prior results.""")
+  argparser.add_argument('--version',
+                         action="version",
+                         version="%s %s" % (kmax.about.__title__, kmax.about.__version__),
+                         help="""Print the version number.""")
+
+  args = argparser.parse_args()
+    
+  if len(args.makefile) == 0:
+    argparser.print_help()
+    sys.exit(1)
+
+  toplevel_dirs = args.makefile
+
+  excludes = set()
+  if args.excludes_file != None:
+    if os.path.exists(args.excludes_file):
+      with open(args.excludes_file, "r") as f:
+        excludes = pickle.load(f)
+
+  # aggregates of the repeated calls kmax output
+  z3_pcs = {}  # for --z3
+  units_by_type = {}  # for output-all-unit-types
+
+  if args.existing_results_file:
+    with open(args.existing_results_file , "r") as f:
+      if args.output_all_unit_types:
+        units_by_type = pickle.load(f)
+      elif args.z3:
+        z3_pcs = pickle.load(f)
+      else:
+        assert(False)
+
+  # compilation_units, # updated with units
+  # library_units,     # updated with lib units
+  # hostprog_units,    # updated with hostprog units
+  # unconfigurable_units,    # updated with
+  #                          # unconfigurable units
+  # extra_targets,     # updated with extra targets
+  # clean_files,       # updated with clean-files units
+  # c_file_targets,    # updated with c-files from targets var
+  # composites,        # updated with composites
+  # broken):           # updated with kbuild files that
+  #                    # break kmax
+
+  subdirectories = set()
+  pending_subdirectories = set()
+  broken = set()
+
+  def covering_set(kbuild_dir):        # src directory to process
+    """Call the covering set program to find the list of compilation
+    units and subdirectories added by the makefile in kbuild_dir"""
+    global excludes
+
+    if kbuild_dir in excludes:
+      sys.stderr.write("skipping %s\n" % (kbuild_dir))
+      return set()
+
+    if not os.path.exists(kbuild_dir):
+      sys.stderr.write("%s does not exist\n" % (kbuild_dir))
+      return set()
+
+    src_variable = kbuild_dir
+    if os.path.exists(kbuild_dir) and os.path.isfile(kbuild_dir):
+      src_variable = os.path.dirname(src_variable)
+      
+    covering_set_args = [ "kmax",
+                          "-Dsrc=" + src_variable,      # drivers/gpu/drm/nouveau/
+                          "-Dsrctree=./",      # arch/mips/Kbuild.platform
+                        ]
+
+    if args.define != None:
+      for define in args.define:
+        covering_set_args.append("-D" + define)
+
+    # add linux-specific non-Boolean
+    if kbuild_dir.startswith("arch/um"):
+      covering_set_args.append("-DOS=Linux")
+    elif kbuild_dir.startswith("arch/x86/um"):
+      covering_set_args.append("-DOS=Linux")
+    elif kbuild_dir.startswith("arch/blackfin"): # 3.19
+      covering_set_args.append("-DARCH=blackfin")
+    elif kbuild_dir.startswith("arch/h8300"): # 5.7.5
+      covering_set_args.append("-DARCH=h8300")
+    elif kbuild_dir.startswith("arch/mips"): # 5.7.5
+      covering_set_args.append("-DARCH=mips")
+    elif kbuild_dir.startswith("drivers/gpu/drm"): # 5.7.5
+      covering_set_args.append("-DFULL_AMD_DISPLAY_PATH=drivers/gpu/drm/amd/display")
+      covering_set_args.append("-DFULL_AMD_PATH=drivers/gpu/drm/amd")
+      covering_set_args.append("-DDISPLAY_FOLDER_NAME=display")
+
+    if args.unselectable != None:
+      covering_set_args.append("--unselectable")
+      covering_set_args.append(args.unselectable)
+
+    if args.config_vars:
+      covering_set_args.append("-C" + args.config_vars)
+
+    if args.tristate_configs:
+      covering_set_args.append("-T")
+
+    if args.output_all_unit_types:
+      covering_set_args.append("-a")
+    elif args.z3:
+      covering_set_args.append("-z")
+    else:
+      assert(False)
+
+    covering_set_args.append(kbuild_dir)
+
+    sys.stderr.write("{}\n".format(' '.join(covering_set_args)))
+    p = subprocess.Popen(covering_set_args,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE
+                         )
+    out, err = p.communicate()
+
+    if p.returncode != 0:
+      sys.stderr.write("ERROR(kmax): %s\n" % (kbuild_dir))
+      sys.stderr.write(err)
+
+    if p.returncode != 0:
+      broken.add(kbuild_dir)
+      return set()
+
+    excludes.add(kbuild_dir)
+
+
+    if args.output_all_unit_types:
+      new_units_by_type = pickle.loads(out)
+
+      new_pending_subdirectories = []
+      for filename in new_units_by_type['compilation_units']:
+        if filename.endswith("/"):
+          new_pending_subdirectories.append(filename)
+
+      for unit_type in new_units_by_type:
+        if unit_type not in units_by_type:
+          units_by_type[unit_type] = set(new_units_by_type[unit_type])
+        else:
+          units_by_type[unit_type].update(set(new_units_by_type[unit_type]))
+      
+    elif args.z3:
+      new_z3_pcs = pickle.loads(out)
+      new_pending_subdirectories = []
+      for filename in new_z3_pcs:
+        if filename.endswith("/"):
+          new_pending_subdirectories.append(filename)
+      z3_pcs.update(new_z3_pcs)
+    else:
+      assert(False)
+
+
+    return new_pending_subdirectories
+
+  # find all compilation_units.  run covering_set.py until no more
+  # Kbuild subdirectories are left.
+  sys.stderr.write("running covering_set\n")
+  # todo add toplevel dirs as always on
+
+  solver = z3.Solver()
+  solver.add(z3.BoolVal(True))
+  true_smt2 = solver.to_smt2()
+
+  makefile_paths = args.makefile
+  for path in args.makefile:
+    if os.path.exists(path):
+      if os.path.isdir(path):
+        dirname = path
+        # check whether the directory has both a Makefile and a Kbuild Makefile
+        kbuild_path = os.path.join(dirname, "Kbuild")
+        makefile_path = os.path.join(dirname, "Makefile")
+        if os.path.exists(kbuild_path) and os.path.exists(makefile_path):
+          # if they both exists, add the Makefile as well, since kmax,
+          # currently favors the Kbuild file.  this is hacky and there
+          # should be a simpler interface between kmaxall and kmax
+          # with clearer default behavior.
+          makefile_paths.append(makefile_path)
+      else:
+        dirname = os.path.dirname(path)
+      if not dirname.endswith("/"):
+        dirname = dirname + "/"
+      z3_pcs[dirname] = true_smt2
+  
+  pending_subdirectories.update(makefile_paths)
+  while len(pending_subdirectories) > 0:
+    subdirectories.update(pending_subdirectories)
+    pending_subdirectories.update(covering_set(pending_subdirectories.pop()))
+
+  fp = os.fdopen(sys.stdout.fileno(), 'wb')
+  if args.output_all_unit_types:
+    pickle.dump(units_by_type, fp, 0)
+  elif args.z3:
+    pickle.dump(z3_pcs, fp, 0)
+  else:
+    assert(False)

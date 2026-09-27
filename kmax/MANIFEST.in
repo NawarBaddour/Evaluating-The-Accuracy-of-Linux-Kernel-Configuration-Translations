@@ -1,0 +1,42 @@
+recursive-include kextractors *.h
+
+include kextractors/kextractor-next-20200430/menu.c
+include kextractors/kextractor-next-20200430/util.c
+
+include kextractors/kextractor-3.19/bconf.lex.c
+include kextractors/kextractor-3.19/confdata.c
+include kextractors/kextractor-3.19/expr.c
+include kextractors/kextractor-3.19/menu.c
+include kextractors/kextractor-3.19/symbol.c
+include kextractors/kextractor-3.19/util.c
+include kextractors/kextractor-3.19/zconf.hash.c
+include kextractors/kextractor-3.19/zconf.lex.c
+
+include kextractors/kextractor-4.12.8/bconf.lex.c
+include kextractors/kextractor-4.12.8/confdata.c
+include kextractors/kextractor-4.12.8/expr.c
+include kextractors/kextractor-4.12.8/menu.c
+include kextractors/kextractor-4.12.8/symbol.c
+include kextractors/kextractor-4.12.8/util.c
+include kextractors/kextractor-4.12.8/zconf.hash.c
+include kextractors/kextractor-4.12.8/zconf.lex.c
+
+include kextractors/kextractor-4.18/confdata.c
+include kextractors/kextractor-4.18/expr.c
+include kextractors/kextractor-4.18/kconf_id.c
+include kextractors/kextractor-4.18/menu.c
+include kextractors/kextractor-4.18/preprocess.c
+include kextractors/kextractor-4.18/symbol.c
+include kextractors/kextractor-4.18/util.c
+include kextractors/kextractor-4.18/zconf.lex.c
+
+include kextractors/kextractor-3.2/bconf.lex.c
+include kextractors/kextractor-3.2/confdata.c
+include kextractors/kextractor-3.2/expr.c
+include kextractors/kextractor-3.2/menu.c
+include kextractors/kextractor-3.2/symbol.c
+include kextractors/kextractor-3.2/util.c
+include kextractors/kextractor-3.2/zconf.hash.c
+include kextractors/kextractor-3.2/zconf.lex.c
+
+recursive-include kmax/resources *

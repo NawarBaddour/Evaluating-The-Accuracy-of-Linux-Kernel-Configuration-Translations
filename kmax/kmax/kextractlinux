@@ -1,0 +1,102 @@
+#!/usr/bin/env python
+
+# This is a wrapper for kextract that uses preset options for Linux
+
+import kextractor_next_20200430
+import kextractor_3_19
+import kextractor_4_12_8
+import sys
+import argparse
+import kmax.about
+import kmax.kextractcommon
+import os
+
+def get_srcarch(arch):
+  srcarch = {
+    "x86_64" : "x86",
+    "i386" : "x86",
+    "sparc64" : "sparc",
+    "sparc" : "sparc",
+    "sh64" : "sh",
+    "sh" : "sh",
+  }
+  if arch in srcarch.keys():
+    return srcarch[arch]
+  else:
+    return arch
+
+def arch_specific(arch):
+  if arch == "um":
+    return [ '-e', 'HEADER_ARCH=x86' ]
+  else:
+    return []
+
+if __name__ == '__main__':
+  available_versions = "Available versions: %s" % (", ".join(kmax.kextractcommon.module_versions.keys()))
+
+  argparser = argparse.ArgumentParser()
+  argparser.add_argument('--module-version',
+                         type=str,
+                         default="latest",
+                         help="""Specify the version of the Kconfig parser to use.  Defaults to \"latest\".  %s.""" % (available_versions))
+  argparser.add_argument("arch",
+                         help="The architecture to extract Kconfig for.")
+  argparser.add_argument("output",
+                         help="The output file to write to.")
+  argparser.add_argument("kconfigfilename",
+                         nargs="?",
+                         default="Kconfig",
+                         help="The name of the Kconfig file.")
+  argparser.add_argument('--version',
+                         action="version",
+                         version="%s %s" % (kmax.about.__title__, kmax.about.__version__),
+                         help="""Print the version number.""")
+  args = argparser.parse_args()
+
+  module_version = args.module_version
+  arch = args.arch
+  output = args.output
+  srcarch = get_srcarch(arch)
+  kconfigfilename = args.kconfigfilename
+
+  if module_version == "latest":
+    module_version = kmax.kextractcommon.latest_module
+
+  if module_version not in kmax.kextractcommon.module_versions.keys():
+    sys.stderr.write("Invalid module version \"%s\".  %s.\n" % (module_version, available_versions))
+    exit(1)
+
+  args = []
+  args.extend([ "--extract" ])  # tell kextract to do an extract oepration
+  args.extend([ "-o", output ]) # set the output file
+  # setup the linux-specific environment variables
+  # srctree is ./
+  archdir = os.path.join("./arch/", srcarch)
+  if not os.path.isdir(archdir):
+    sys.stderr.write("Architecture directory not available \"%s\", so not attempting kextractlinux.\n" % (archdir))
+    exit(2)
+  args.extend([
+    "-e", "ARCH=%s" % (arch), 
+    "-e", "SRCARCH=%s" % (srcarch),
+    "-e", "KERNELVERSION=kcu",
+    "-e", "srctree=./",
+    "-e", "RUSTC=rustc"
+  ])
+  # let the user specify CC and LD, e.g., for clang support
+  cc_env = os.environ.get("CC", "cc")
+  ld_env = os.environ.get("LD", "ld")
+  args.extend([
+    "-e", f"CC={cc_env}",
+    "-e", f"LD={ld_env}",
+  ])
+  # optionally use the LLVM environment variable to support clang/llvm kernel builds
+  llvm = os.environ.get("LLVM")
+  if llvm != None:
+    args.extend([ "-e", f"LLVM={llvm}" ])
+    # example: LLVM=1 CC="clang -fintegrated-a" LD=ld.lld kextractlinux x86_64 kextract.out --module-version next-20251023
+  # set arch-specific environment variables
+  args.extend(arch_specific(arch))
+  # set the kconfig filename
+  args.extend([ kconfigfilename ])
+  sys.stderr.write(f'{" ".join(args)}\n')
+  kmax.kextractcommon.kextract(module_version, args)
